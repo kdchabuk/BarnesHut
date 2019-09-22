@@ -215,11 +215,12 @@ namespace BarnesHut
             int f = reverseTime ? -1 : 1;
             if(useMultiTimeStep)
             {
+                int tier;
                 var tiers = new List<int>();
                 for (int i = 0; i < stepcounts.Count; i++)
                 {
                     var x = math.ceilpow2(stepcounts[i]);
-                    int tier = 0;
+                    tier = 0;
                     while (x >> (tier + 1) > 0)
                         tier += 1;
                     tiers.Add(tier);
@@ -229,7 +230,11 @@ namespace BarnesHut
                 int maxTier = tiers.Max();
                 var tierDicts = new Dictionary<int, Dictionary<int, List<int>>>();
                 Dictionary<int, List<int>> d;
-                for (int tier = maxTier; tier >= 0; tier--)
+                int stepcount = 0;
+                tier = maxTier;
+                double minStepsize = f * fixedDeltaTime / (1 << maxTier);
+
+                while(stepcount < 1 << maxTier || tier < maxTier)
                 {
                     if (tierDicts.ContainsKey(tier))
                         d = tierDicts[tier];
@@ -243,20 +248,24 @@ namespace BarnesHut
                             }
                         tierDicts.Add(tier, d);
                     }
-
-                    int tierMaxSteps = 1 << tier;
-                    
-                    for (int stepcount = 0; stepcount < tierMaxSteps; stepcount++)
+                    if (d.Count > 0)
                     {
-                        var newObjects = RK4(f * fixedDeltaTime / tierMaxSteps, d, objects);
-                        // Merging across different tiers may be improved
-                        // but for now, simply combine immediately.
+                        double stepsize = minStepsize * (1 << (maxTier - tier));
+                        var newObjects = RK4(stepsize, d, objects);
                         foreach (var kv in newObjects)
                             objects[kv.Key] = kv.Value;
                         ComputeCOM();
                     }
-                }
 
+                    if (tier == maxTier)
+                        stepcount += 1;
+                    if (stepcount % (1 << (maxTier - tier + 1)) == 0)
+                        tier -= 1;
+                    else
+                        tier = maxTier;
+                }
+                
+                Debug.Log("tierDicts: " + string.Join( ",", tierDicts.Keys));
                 objects.RemoveRange(NumObjects, objects.Count - NumObjects);
             }
             else
