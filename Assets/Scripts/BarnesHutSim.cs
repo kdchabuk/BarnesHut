@@ -84,7 +84,8 @@ namespace BarnesHut
             for (int i = 0; i < NumObjects; i++)
                 gameObjects[i].transform.position = new Vector3(
                     (float)(objects[i].position.x), (float)objects[i].position.y, (float)objects[i].position.z);
-            
+                    
+            Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
             if (drawOctants)
             {
                 //TODO draw octant grid
@@ -100,7 +101,7 @@ namespace BarnesHut
             
             Step();
             //Debug.Log((Time.realtimeSinceStartup - startTime) * 1000f + "ms");
-            Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
+            
 
             
             if (!drawOctants)
@@ -111,33 +112,26 @@ namespace BarnesHut
         {
             var rangen = new Unity.Mathematics.Random(_seed);
             objects = new List<Particle>(2 * NumObjects);
-            // objects = new List<Particle>(32);
-            // objects.Add(new Particle(new double3(1d, 0, 0), new double3(0d, 0d, 0.0d), 0.8d));
-            // objects.Add(new Particle(new double3(-1d, 0, 0), new double3(0.0d, 0, -math.sqrt(G/2d)), 0.2d));
             objects.Add(new Particle(new double3(0.0d, 0, 0d), new double3(0.0d, 0, 0), 1.0d));
-            objects.Add(new Particle(new double3(1e1d, 0d, 0d), new double3(0d, 0d, math.sqrt(G/10d)), 0.001d));
-            objects.Add(new Particle(new double3(1.02e1d, 0d, 0d), new double3(0d, 0d, math.sqrt(G/10d) + math.sqrt(G*.001/.2d)), 0.0002d));
-            objects.Add(new Particle(new double3(-1e1d, 0d, 0d), new double3(0d, 0d, -math.sqrt(G/10d)), 0.002d));
-            objects.Add(new Particle(new double3(0d, 0d, 1.2e1d), new double3(1d, 0d, 0d), 0.0001d));
+            // objects.Add(new Particle(new double3(1e1d, 0d, 0d), new double3(0d, 0d, math.sqrt(G/10d)), 0.001d));
+            // objects.Add(new Particle(new double3(1.02e1d, 0d, 0d), new double3(0d, 0d, math.sqrt(G/10d) + math.sqrt(G*.001/.2d)), 0.0002d));
+            // objects.Add(new Particle(new double3(-1e1d, 0d, 0d), new double3(0d, 0d, -math.sqrt(G/10d)), 0.002d));
+            // objects.Add(new Particle(new double3(0d, 0d, 1.2e1d), new double3(1d, 0d, 0d), 0.0001d));
             
             
-            // objects.Add(new Particle(new double3(0d, 0, -20d), new double3(1, 0, 0) * math.sqrt(G/40d), 0.1d));
-            // objects.Add(new Particle(new double3(0d, 0, -20d), new double3(0), 0.1d));
-
             // Add some asteroids/debris
             while(objects.Count < NumObjects)
             {
                 float angle = rangen.NextFloat(2f * math.PI);
-
+                double length = (1 - math.pow(rangen.NextDouble(), 2)) * 15d + 5d;
                 var pos = new double3(math.rotate(quaternion.RotateY(angle), new float3(1,0,0)))
-                    * rangen.NextDouble(9d, 20d);
-                var vel = new double3(-pos.z, 0, pos.x) / math.length(pos)*math.sqrt(G/math.length(pos));
-                var m = rangen.NextDouble(.00002d);
+                    * length;
+                var vel = new double3(-pos.z, 0, pos.x) / length * math.sqrt(G/length);
+                var m = rangen.NextDouble(.0001d);
                 var p = new Particle(pos, vel, m);
                 objects.Add(p);
             }
             NumObjects = objects.Count;
-            // var x = new double3( rangen.NextFloat3() * quaternion.RotateY(6.28f));
             
 
             // Shift gameObjects so COM and total momentum is 0
@@ -636,7 +630,7 @@ namespace BarnesHut
             return dydt;
         }
 
-        [BurstCompile]
+        [BurstCompile(CompileSynchronously = true)]
         private struct ComputeChangeJob : IJob
         {
             [ReadOnly] public NativeArray<Particle> jobObjects;

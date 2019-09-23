@@ -33,13 +33,15 @@ namespace BarnesHut
 
         public OctreeNode[] children = new OctreeNode[8];
         private OctreeNode root;
-    
+        private bool _hasChildren;
+
         public OctreeNode(double3 center, float octantSize, OctreeNode root)
         {
             this.center = center;
             this.octantSize = octantSize;
             //this.root = root;
             this.index = -1;
+            this._hasChildren = false;
         }
     
         public bool bounds(double3 v)
@@ -80,6 +82,7 @@ namespace BarnesHut
                 var newCenter = octantSize/2 * octantVector(octant) + center;
                 children[octant] = new OctreeNode (newCenter, octantSize/2, this.root);
             }
+            _hasChildren = true;
             return children[octant].addBelowNode (newIndex, newObj, objects);
         }
         private int computeOctant(double3 v)
@@ -99,10 +102,7 @@ namespace BarnesHut
         }
         public bool hasChildren()
         {
-            foreach(var child in children)
-                if(child != null)
-                    return true;
-            return false;
+            return _hasChildren;
         }
 
         public float MinOctantSize()
