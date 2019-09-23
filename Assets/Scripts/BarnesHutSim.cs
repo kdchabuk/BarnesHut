@@ -8,7 +8,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using Unity.Jobs;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
+using Unity.Burst;
 
 namespace BarnesHut
 {
@@ -23,14 +25,16 @@ namespace BarnesHut
         [SerializeField] private float theta = 0.1f;
         [SerializeField] private float alphaTimeStep = 0.005f;
         [SerializeField] private double fixedDeltaTime = 0.01d;
+        [SerializeField] private int NumObjects = 10;
         // Gravitational constant using km, seconds, and solar mass
         // Source: https://www.wolframalpha.com/input/?i=gravitational+constant+in+km%5E3%2Fs%5E2%2F%28solar+mass%29
         // private const double g = 1.327e11f; 
         // AU, years, and solar mass
         private const double g = 39.42;
         
-        public int NumObjects = 10;
+        
         private List<Particle> objects;
+        private NativeArray<Particle> nativeObjects;
         
         private List<List<int>> interactionLists;
         private OctreeNode root;
@@ -119,6 +123,7 @@ namespace BarnesHut
 
             NumObjects = objects.Count;
             
+
             // Shift gameObjects so COM and total momentum is 0
             var totalmass = 0d;
             var com = new double3(0);
@@ -133,10 +138,8 @@ namespace BarnesHut
             velocity /= totalmass;
             for (int i = 0; i < NumObjects; i++)
             {
-                // var x = objects[i];
-                // objects[i] = new Particle(x.position - com, x.velocity, x.mass);
-                
                 objects[i] -= new Particle(com, velocity, 0);
+                
             }
         }
 
@@ -204,6 +207,41 @@ namespace BarnesHut
                 }
             }
         }
+        static private void ComputeCOM(OctreeNode node, NativeArray<Particle> objects)
+        {
+            if (node.hasChildren())
+            {
+                // Internal node: set index to reference a new object
+                /* if (node.index < 0)
+                {
+                    node.index = objects.Count;
+                    objects.Add(default(Particle));
+                } */
+
+                var mass = 0d;
+                var com = new double3(0);
+                var velocity = new double3(0);
+                foreach (var child in node.children)
+                {
+                    if (child != null)
+                    {
+                        ComputeCOM(child, objects);
+                        //Debug.Log("child index: " + child.index);
+                        //Debug.Log("node index: " + node.index);
+                        if (objects[child.index].mass > 0)
+                        {
+                            mass += objects[child.index].mass;
+                            com += objects[child.index].position * objects[child.index].mass;
+                            velocity += objects[child.index].velocity * objects[child.index].mass;
+                        }
+                    }
+                }
+                if (mass > 0)
+                {
+                    objects[node.index] = new Particle(com / mass, velocity / mass, mass);
+                }
+            }
+        }
 
         private void Step()
         {
@@ -225,7 +263,8 @@ namespace BarnesHut
                         tier += 1;
                     tiers.Add(tier);
                 }
-
+                // if(useJobsSystem)
+                //     nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
                 
                 int maxTier = tiers.Max();
                 var tierDicts = new Dictionary<int, Dictionary<int, List<int>>>();
@@ -233,6 +272,7 @@ namespace BarnesHut
                 int stepcount = 0;
                 tier = maxTier;
                 double minStepsize = f * fixedDeltaTime / (1 << maxTier);
+                Dictionary<int, Particle> newObjects;
 
                 while(stepcount < 1 << maxTier || tier < maxTier)
                 {
@@ -251,9 +291,13 @@ namespace BarnesHut
                     if (d.Count > 0)
                     {
                         double stepsize = minStepsize * (1 << (maxTier - tier));
-                        var newObjects = RK4(stepsize, d, objects);
+                        if (useJobsSystem)
+                            newObjects = RK4ParallelJobs(stepsize, d, objects);
+                        else
+                            newObjects = RK4(stepsize, d, objects);
                         foreach (var kv in newObjects)
                             objects[kv.Key] = kv.Value;
+                        
                         ComputeCOM();
                     }
 
@@ -265,7 +309,7 @@ namespace BarnesHut
                         tier = maxTier;
                 }
                 
-                Debug.Log("tierDicts: " + string.Join( ",", tierDicts.Keys));
+                // Debug.Log("tierDicts: " + string.Join( ",", tierDicts.Keys));
                 objects.RemoveRange(NumObjects, objects.Count - NumObjects);
             }
             else
@@ -276,6 +320,9 @@ namespace BarnesHut
                 newObjects.RemoveRange(NumObjects, newObjects.Count - NumObjects);
                 objects = newObjects;
             }
+
+            // if(useJobsSystem)
+            //     nativeObjects.Dispose();
             if (objects.Count > NumObjects)
                 objects.RemoveRange(NumObjects, objects.Count - NumObjects);
         }
@@ -341,6 +388,30 @@ namespace BarnesHut
             }
         }
 
+        private void rk4stepnum(double stepsize, int stepnum, NativeArray<int> indexes, NativeArray<Particle> k, List<Particle> yn, NativeArray<Particle> tempObjects)
+        {
+            double factor = 0;
+            switch(stepnum)
+            {
+                case 1: factor = 0.5; break;
+                case 2: factor = 0.5; break;
+                case 3: factor = 1.0; break;
+                case 4: break;
+                default:
+                    Debug.Log("Invalid stepnum");
+                    break;
+            }
+            //var keys = new List<int>(k.Keys);
+            foreach (int i in indexes)
+            {
+                k[i] *= stepsize;
+                if(stepnum < 4)
+                {
+                    tempObjects[i] = yn[i] + k[i] * factor;
+                }
+            }
+        }
+
         private Dictionary<int, Particle> RK4(double stepsize, Dictionary<int, List<int>> interactionLists, List<Particle> yn)
         {
             // fourth order Runge-Kutta numerical method
@@ -351,22 +422,22 @@ namespace BarnesHut
                 tempObjects.Add(new Particle(yn[i]));
 
             //k1 = h * f(0, yn);
-            var k1 = computeChangeAtIndexes(interactionLists, 0, tempObjects);
+            var k1 = ComputeChangeAtIndexes(interactionLists, 0, tempObjects);
             rk4stepnum(stepsize, 1, k1, yn, tempObjects);
             ComputeCOM(root, tempObjects);
 
             //k2 = h * f(h/2, yn + k1 / 2);
-            var k2 = computeChangeAtIndexes(interactionLists, stepsize * 0.5, tempObjects);
+            var k2 = ComputeChangeAtIndexes(interactionLists, stepsize * 0.5, tempObjects);
             rk4stepnum(stepsize, 2, k2, yn, tempObjects);
             ComputeCOM(root, tempObjects);
 
             //k3 = h * f(h/2, yn + k2 / 2);
-            var k3 = computeChangeAtIndexes(interactionLists, stepsize * 0.5, tempObjects);
+            var k3 = ComputeChangeAtIndexes(interactionLists, stepsize * 0.5, tempObjects);
             rk4stepnum(stepsize, 3, k3, yn, tempObjects);
             ComputeCOM(root, tempObjects);
             
             //k4 = h * f(h, yn + k3);
-            var k4 = computeChangeAtIndexes(interactionLists, stepsize, tempObjects);
+            var k4 = ComputeChangeAtIndexes(interactionLists, stepsize, tempObjects);
             rk4stepnum(stepsize, 4, k4, yn, tempObjects);
             
             var results = new Dictionary<int, Particle>();
@@ -392,22 +463,22 @@ namespace BarnesHut
                 tempObjects.Add(new Particle(yn[i]));
 
             //k1 = h * f(0, yn);
-            var k1 = computeChangeAtAll(interactionLists, 0, tempObjects);
+            var k1 = ComputeChangeAtAll(interactionLists, 0, tempObjects);
             rk4stepnum(stepsize, 1, k1, yn, tempObjects);
             ComputeCOM(root, tempObjects);
 
             //k2 = h * f(h/2, yn + k1 / 2);
-            var k2 = computeChangeAtAll(interactionLists, stepsize * 0.5, tempObjects);
+            var k2 = ComputeChangeAtAll(interactionLists, stepsize * 0.5, tempObjects);
             rk4stepnum(stepsize, 2, k2, yn, tempObjects);
             ComputeCOM(root, tempObjects);
 
             //k3 = h * f(h/2, yn + k2 / 2);
-            var k3 = computeChangeAtAll(interactionLists, stepsize * 0.5, tempObjects);
+            var k3 = ComputeChangeAtAll(interactionLists, stepsize * 0.5, tempObjects);
             rk4stepnum(stepsize, 3, k3, yn, tempObjects);
             ComputeCOM(root, tempObjects);
             
             //k4 = h * f(h, yn + k3);
-            var k4 = computeChangeAtAll(interactionLists, stepsize, tempObjects);
+            var k4 = ComputeChangeAtAll(interactionLists, stepsize, tempObjects);
             rk4stepnum(stepsize, 4, k4, yn, tempObjects);
 
             for (int i = 0; i < NumObjects; i++)
@@ -425,91 +496,115 @@ namespace BarnesHut
             return tempObjects;
         }
 
-        /* private Dictionary<int, Particle> RK4ParallelJobs(double stepsize, Dictionary<int, List<int>> interactionLists, List<Particle> yn)
+        private Dictionary<int, Particle> RK4ParallelJobs(double stepsize, Dictionary<int, List<int>> interactionLists, List<Particle> yn)
         {
             var tempObjects = new NativeArray<Particle>(yn.Count, Allocator.TempJob);
             for (int i = 0; i < yn.Count; i++)
                 tempObjects[i] = new Particle(yn[i]);
+            var k = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
+            var ksum = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
+            var indexes = new NativeArray<int>(interactionLists.Count, Allocator.TempJob);
+
+            int j = 0;
+            foreach (int i in interactionLists.Keys)
+            {
+                indexes[j] = i;
+                j += 1;
+            }
 
             //k1 = h * f(0, yn);
-            var k1 = computeChangeAtIndexes(interactionLists, 0, tempObjects);
-            rk4stepnum(stepsize, 1, k1, yn, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, 0, tempObjects);
+            rk4stepnum(stepsize, 1, indexes, k, yn, tempObjects);
             ComputeCOM(root, tempObjects);
+            for (int i = 0; i < k.Length; i++) ksum[i] += k[i];
 
             //k2 = h * f(h/2, yn + k1 / 2);
-            var k2 = computeChangeAtIndexes(interactionLists, stepsize * 0.5, tempObjects);
-            rk4stepnum(stepsize, 2, k2, yn, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, tempObjects);
+            rk4stepnum(stepsize, 2, indexes, k, yn, tempObjects);
             ComputeCOM(root, tempObjects);
+            for (int i = 0; i < k.Length; i++) ksum[i] += 2d * k[i];
 
             //k3 = h * f(h/2, yn + k2 / 2);
-            var k3 = computeChangeAtIndexes(interactionLists, stepsize * 0.5, tempObjects);
-            rk4stepnum(stepsize, 3, k3, yn, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, tempObjects);
+            rk4stepnum(stepsize, 3, indexes, k, yn, tempObjects);
             ComputeCOM(root, tempObjects);
+            for (int i = 0; i < k.Length; i++) ksum[i] += 2d * k[i];
             
             //k4 = h * f(h, yn + k3);
-            var k4 = computeChangeAtIndexes(interactionLists, stepsize, tempObjects);
-            rk4stepnum(stepsize, 4, k4, yn, tempObjects);
-            
+            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize, tempObjects);
+            rk4stepnum(stepsize, 4, indexes, k, yn, tempObjects);
+            for (int i = 0; i < k.Length; i++) ksum[i] += k[i];
+
             var results = new Dictionary<int, Particle>();
             foreach (int i in interactionLists.Keys)
             {
                 //yn + (k1 + 2 * k2 + 2 * k3 + k4) / 6.0;
-                results.Add(i, new Particle(
-                    yn[i].position + (k1[i].position + 2f * k2[i].position + 2f * k3[i].position + k4[i].position) / 6f,
-                    yn[i].velocity + (k1[i].velocity + 2f * k2[i].velocity + 2f * k3[i].velocity + k4[i].velocity) / 6f,
-                    yn[i].mass));
+                results.Add(i, yn[i] + ksum[i] * (1d/6d));
             }
-
+            k.Dispose();
+            ksum.Dispose();
+            tempObjects.Dispose();
+            indexes.Dispose();
             return results;
-        } */
+        }
 
         private void ComputeCOM()
         {
             ComputeCOM(root, objects);
         }
 
-        /* private Dictionary<int, Particle> computeChangeAtIndexes(Dictionary<int, List<int>> interactionLists, double stepsize, NativeArray<Particle> objects)
+        private void ComputeChangeAtIndexes(NativeArray<int> indexes, NativeArray<Particle> k, Dictionary<int, List<int>> interactionLists, double stepsize, NativeArray<Particle> objects)
         {
-            var diffs = new Dictionary<int, Particle>(interactionLists.Count);
-            foreach (var i in interactionLists.Keys)
+            
+            var tempList = new List<NativeArray<int>>();
+            foreach (var kv in interactionLists)
             {
-                var list = new NativeArray<int>();
-                interactionLists[i].CopyTo(list);
-                var particle = new Particle();
+                var list = new NativeArray<int>(kv.Value.Count, Allocator.TempJob);
 
-                //diffs.Add(i, computeChangeAtIndex(i, interactionLists[i], stepsize, objects));
+                for (int i = 0; i < kv.Value.Count; i++)
+                    list[i] = kv.Value[i];
+                tempList.Add(list);
+            }
+            
+            var jobHandles = new NativeArray<JobHandle>(tempList.Count, Allocator.TempJob);
+            for(int i = 0; i < tempList.Count; i++)
+            {
                 ComputeChangeJob job = new ComputeChangeJob {
                     stepsize = stepsize,
-                    diff = particle,
-                    interactionIndexes = list,
+                    particleIndex = indexes[i],
+                    results = k,
+                    interactionIndexes = tempList[i],
                     jobObjects = objects,
                 };
-                job.Schedule();
+                jobHandles[i] = job.Schedule();
             }
-            return diffs;
-        } */
+            
+            JobHandle.CompleteAll(jobHandles);
+            jobHandles.Dispose();
+            foreach (var l in tempList) l.Dispose();
+        }
 
-        private Dictionary<int, Particle> computeChangeAtIndexes(Dictionary<int, List<int>> interactionLists, double stepsize, List<Particle> objects)
+        private Dictionary<int, Particle> ComputeChangeAtIndexes(Dictionary<int, List<int>> interactionLists, double stepsize, List<Particle> objects)
         {
             var diffs = new Dictionary<int, Particle>(interactionLists.Count);
             foreach (var i in interactionLists.Keys)
             {
-                diffs.Add(i, computeChangeAtIndex(i, interactionLists[i], stepsize, objects));
+                diffs.Add(i, ComputeChangeAtIndex(i, interactionLists[i], stepsize, objects));
             }
             return diffs;
         }
 
-        private List<Particle> computeChangeAtAll(List<List<int>> interactionLists, double stepsize, List<Particle> objects)
+        private List<Particle> ComputeChangeAtAll(List<List<int>> interactionLists, double stepsize, List<Particle> objects)
         {
             var diffs = new List<Particle>(NumObjects);
             for (int i = 0; i < this.NumObjects; i++)
             {
-                diffs.Add(computeChangeAtIndex(i, interactionLists[i], stepsize, objects));
+                diffs.Add(ComputeChangeAtIndex(i, interactionLists[i], stepsize, objects));
             }
             return diffs;
         }
 
-        private Particle computeChangeAtIndex(int index, List<int> interactionIndexes, double stepsize, List<Particle> tempObjects)
+        private Particle ComputeChangeAtIndex(int index, List<int> interactionIndexes, double stepsize, List<Particle> tempObjects)
         {
             double3 acc = 0;
 
@@ -525,26 +620,29 @@ namespace BarnesHut
             return dydt;
         }
 
-        private struct ComputeChangeJob : IJobParallelFor
+        [BurstCompile]
+        private struct ComputeChangeJob : IJob
         {
-            public NativeArray<Particle> jobObjects;
-            public NativeArray<int> interactionIndexes;
+            [ReadOnly] public NativeArray<Particle> jobObjects;
+            [ReadOnly] public NativeArray<int> interactionIndexes;
+            public int particleIndex;
             public double stepsize;
-            public Particle diff;
+            [NativeDisableContainerSafetyRestriction]
+            public NativeSlice<Particle> results;
 
-            public void Execute(int index)
+            public void Execute()
             {
                 double3 acc = 0;
-
-                foreach(int gravSourceIndex in interactionIndexes)
+                for (int j = 0; j < interactionIndexes.Length; j++)
                 {
-                    var d = jobObjects[gravSourceIndex].position - jobObjects[index].position +
-                            (jobObjects[gravSourceIndex].velocity - jobObjects[index].velocity) * stepsize;
+                    int gravSourceIndex = interactionIndexes[j];
+                    var d = jobObjects[gravSourceIndex].position - jobObjects[particleIndex].position +
+                            (jobObjects[gravSourceIndex].velocity - jobObjects[particleIndex].velocity) * stepsize;
                     var dmag = math.length(d);
                     
                     acc += G * jobObjects[gravSourceIndex].mass / (dmag*dmag*dmag) * d;
                 }
-                diff = new Particle(jobObjects[index].velocity, acc, 0);
+                results[particleIndex] = new Particle(jobObjects[particleIndex].velocity, acc, 0);
             }
         }
 

@@ -39,5 +39,8 @@ namespace BarnesHut
         public static Particle operator *(Particle a, double b) {
             return new Particle(a.position * b, a.velocity * b, a.mass * b);
         }
+        public static Particle operator *(double a, Particle b) {
+            return b * a;
+        }
     }
 }
