@@ -74,7 +74,7 @@ namespace BarnesHut
                 var position = new Vector3((float)objects[i].position.x, (float)objects[i].position.y, (float)objects[i].position.z);
                 //var position =  new float3(objects[i].position);
                 var gameObject = Instantiate(prefab, position, Quaternion.identity);
-                gameObject.transform.localScale = Vector3.one * (0.2f + Mathf.Sqrt((float)objects[i].mass));
+                gameObject.transform.localScale = Vector3.one * (0.1f + Mathf.Sqrt((float)objects[i].mass));
                 gameObjects.Add(gameObject);
             }
         }
@@ -127,10 +127,10 @@ namespace BarnesHut
             // Add some asteroids/debris
             while(objects.Count < NumObjects)
             {
-                var pos = new double3(rangen.NextDouble(1d, 2d) * (rangen.NextInt(2) * 2 - 1),
-                    0,
-                    rangen.NextDouble(1d, 2d) * (rangen.NextInt(2) * 2 - 1))
-                    * 9d * (rangen.NextInt(2) * 2 - 1);
+                float angle = rangen.NextFloat(2f * math.PI);
+
+                var pos = new double3(math.rotate(quaternion.RotateY(angle), new float3(1,0,0)))
+                    * rangen.NextDouble(9d, 20d);
                 var vel = new double3(-pos.z, 0, pos.x) / math.length(pos)*math.sqrt(G/math.length(pos));
                 var m = rangen.NextDouble(.00002d);
                 var p = new Particle(pos, vel, m);
