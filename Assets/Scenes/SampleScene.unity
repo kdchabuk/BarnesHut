@@ -149,16 +149,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 59bcadc2f550b48709f574c5128f1692, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  gameObjects: []
   prefab: {fileID: 1557604467519409928, guid: 9d8a79eb4e10dbb2380fc488251b899b, type: 3}
   useJobsSystem: 0
   useMultiTimeStep: 1
   reverseTime: 0
   drawOctants: 0
   theta: 0.1
-  alphaTimeStep: 0.0025
+  alphaTimeStep: 0.005
   fixedDeltaTime: 0.01
-  NumObjects: 10
+  NumObjects: 30
+  _seed: 1
+  _maxTimeTier: 10
 --- !u!4 &669548761
 Transform:
   m_ObjectHideFlags: 0

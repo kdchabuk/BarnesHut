@@ -16,7 +16,7 @@ namespace BarnesHut
 {
     public class BarnesHutSim : MonoBehaviour
     {
-        public List<GameObject> gameObjects;
+        private List<GameObject> gameObjects;
         public GameObject prefab;
         [SerializeField] private bool useJobsSystem = false;
         [SerializeField] private bool useMultiTimeStep = true;
@@ -26,6 +26,8 @@ namespace BarnesHut
         [SerializeField] private float alphaTimeStep = 0.005f;
         [SerializeField] private double fixedDeltaTime = 0.01d;
         [SerializeField] private int NumObjects = 10;
+        [SerializeField] private uint _seed = 1;
+        [SerializeField] private int _maxTimeTier = 10;
         // Gravitational constant using km, seconds, and solar mass
         // Source: https://www.wolframalpha.com/input/?i=gravitational+constant+in+km%5E3%2Fs%5E2%2F%28solar+mass%29
         // private const double g = 1.327e11f; 
@@ -107,8 +109,9 @@ namespace BarnesHut
 
         void GenerateExampleSystem()
         {
-            //objects = new List<data>(2 * NumObjects);
-            objects = new List<Particle>(32);
+            var rangen = new Unity.Mathematics.Random(_seed);
+            objects = new List<Particle>(2 * NumObjects);
+            // objects = new List<Particle>(32);
             // objects.Add(new Particle(new double3(1d, 0, 0), new double3(0d, 0d, 0.0d), 0.8d));
             // objects.Add(new Particle(new double3(-1d, 0, 0), new double3(0.0d, 0, -math.sqrt(G/2d)), 0.2d));
             objects.Add(new Particle(new double3(0.0d, 0, 0d), new double3(0.0d, 0, 0), 1.0d));
@@ -121,7 +124,20 @@ namespace BarnesHut
             // objects.Add(new Particle(new double3(0d, 0, -20d), new double3(1, 0, 0) * math.sqrt(G/40d), 0.1d));
             // objects.Add(new Particle(new double3(0d, 0, -20d), new double3(0), 0.1d));
 
+            // Add some asteroids/debris
+            while(objects.Count < NumObjects)
+            {
+                var pos = new double3(rangen.NextDouble(1d, 2d) * (rangen.NextInt(2) * 2 - 1),
+                    0,
+                    rangen.NextDouble(1d, 2d) * (rangen.NextInt(2) * 2 - 1))
+                    * 9d * (rangen.NextInt(2) * 2 - 1);
+                var vel = new double3(-pos.z, 0, pos.x) / math.length(pos)*math.sqrt(G/math.length(pos));
+                var m = rangen.NextDouble(.00002d);
+                var p = new Particle(pos, vel, m);
+                objects.Add(p);
+            }
             NumObjects = objects.Count;
+            // var x = new double3( rangen.NextFloat3() * quaternion.RotateY(6.28f));
             
 
             // Shift gameObjects so COM and total momentum is 0
@@ -259,7 +275,7 @@ namespace BarnesHut
                 {
                     var x = math.ceilpow2(stepcounts[i]);
                     tier = 0;
-                    while (x >> (tier + 1) > 0)
+                    while (x >> (tier + 1) > 0 && tier < _maxTimeTier)
                         tier += 1;
                     tiers.Add(tier);
                 }
