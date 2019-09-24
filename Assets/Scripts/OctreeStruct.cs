@@ -11,7 +11,7 @@ namespace BarnesHut
         public double3 center;
         public int index;
         public int4x2 children;
-        private bool _hasChildren;
+        public bool hasChildren;
 
         public OctreeStruct(double3 center, float octantSize, int index, int4x2 children)
         {
@@ -19,7 +19,7 @@ namespace BarnesHut
             this.octantSize = octantSize;
             this.index = index;
             var bc = (children >= 0);
-            this._hasChildren = math.any(bc.c0) || math.any(bc.c1);
+            this.hasChildren = math.any(bc.c0) || math.any(bc.c1);
             this.children = children;
         }
     }

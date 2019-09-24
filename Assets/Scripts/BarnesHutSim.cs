@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using Unity.Jobs;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
+// using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Burst;
 
@@ -19,7 +19,7 @@ namespace BarnesHut
         private List<GameObject> gameObjects;
         public GameObject prefab;
         [SerializeField] private bool useJobsSystem = false;
-        [SerializeField] private bool useMultiTimeStep = true;
+        private bool useMultiTimeStep = false; // currently buggy
         [SerializeField] private bool reverseTime = false;
         [SerializeField] private bool drawOctants = false;
         [SerializeField] private float theta = 0.1f;
@@ -31,7 +31,7 @@ namespace BarnesHut
         // Gravitational constant using km, seconds, and solar mass
         // Source: https://www.wolframalpha.com/input/?i=gravitational+constant+in+km%5E3%2Fs%5E2%2F%28solar+mass%29
         // private const double g = 1.327e11f; 
-        // AU, years, and solar mass
+        // AU, years, and solar mass to have smaller exponent in doubles
         private const double g = 39.42;
         
         
@@ -92,8 +92,7 @@ namespace BarnesHut
                     
             Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
             // Debug.Log("Average jobs per batch:" + (float)(totalJobsRun) / jobHandleCount);
-            // totalJobsRun = 0;
-            // jobHandleCount = 0;
+            
 
             if (drawOctants)
             {
@@ -114,10 +113,9 @@ namespace BarnesHut
             Step();            
             //Debug.Log((Time.realtimeSinceStartup - startTime) * 1000f + "ms");
             
-
             
             if (!drawOctants)
-                root = null; // This allows GC to clean up OctreeNodes
+                root = null; // Will rebuild
         }
 
         void GenerateExampleSystem()
@@ -185,7 +183,7 @@ namespace BarnesHut
                     sideLength = (float)dist;
             }
 
-            root = new OctreeNode (com, sideLength, null);
+            root = new OctreeNode (com, sideLength);
             for (int i = 0; i < NumObjects; i++)
             {
                 root.addAsChild (i, objects[i], objects);
@@ -267,36 +265,7 @@ namespace BarnesHut
 
         private void Step()
         {
-            if (useJobsSystem)
-            {
-                nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
-                
-                for (int i = 0; i < objects.Count; i++)
-                    nativeObjects[i] = objects[i];
-                int totalInteractionsCount = 0;
-                foreach (var list in interactionLists)
-                    totalInteractionsCount += list.Count;
-
-                fullInteractionIndexes = new NativeArray<int>(totalInteractionsCount, Allocator.TempJob);
-                fullInteractions = new NativeArray<Particle>(totalInteractionsCount, Allocator.TempJob);
-                interactionSlices = new NativeArray<int2>(NumObjects, Allocator.TempJob);
-                
-
-                int counter = 0;
-                for (int i = 0; i < NumObjects; i++)
-                {
-                    var currList = interactionLists[i];
-                    interactionSlices[i] = new int2(counter, currList.Count);
-                    for (int j = 0; j < currList.Count; j++)
-                    {
-                        fullInteractionIndexes[counter] = currList[j];
-                        fullInteractions[counter] = objects[currList[j]];
-                        counter += 1;
-                    }
-                }
-            }
             
-
             int f = reverseTime ? -1 : 1;
             var tiers = new List<int>();
             if(useMultiTimeStep)
@@ -325,14 +294,6 @@ namespace BarnesHut
                         numIterations[i] = 1 << tiers[i];
                     else
                         numIterations[i] = 1;
-                    // stepsizes[i] = minStepsize * (maxTier - tiers[i] + 1);
-                    // var currList = interactionLists[i];
-                    // interactionSlices[i] = new int2(counter, currList.Count);
-                    // for (int j = 0; j < currList.Count; j++)
-                    // {
-                    //     fullInteractions[counter] = objects[currList[j]];
-                    //     counter += 1;
-                    // }
                 }
 
                 var jobs = new RK4Job
@@ -389,13 +350,9 @@ namespace BarnesHut
             }
             foreach (int i in indexes)
             {
-                //k[i].position *= stepsize;
-                //k[i].velocity *= stepsize;
                 k[i] *= stepsize;
                 if(stepnum < 4)
                 {
-                    //tempObjects[i].position = yn[i].position + k[i].position * factor;
-                    //tempObjects[i].velocity = yn[i].velocity + k[i].velocity * factor;
                     tempObjects[i] = yn[i] + k[i] * factor;
                 }
             }
@@ -423,13 +380,9 @@ namespace BarnesHut
             var keys = new List<int>(k.Keys);
             foreach (int i in keys)
             {
-                //k[i].position *= stepsize;
-                //k[i].velocity *= stepsize;
                 k[i] *= stepsize;
                 if(stepnum < 4)
                 {
-                    //tempObjects[i].position = yn[i].position + k[i].position * factor;
-                    //tempObjects[i].velocity = yn[i].velocity + k[i].velocity * factor;
                     tempObjects[i] = yn[i] + k[i] * factor;
                 }
             }
@@ -531,8 +484,6 @@ namespace BarnesHut
             for (int i = 0; i < NumObjects; i++)
             {
                 //yn + (k1 + 2 * k2 + 2 * k3 + k4) / 6.0;
-                // tempObjects[i].position = yn[i].position + (k1[i].position + 2f * k2[i].position + 2f * k3[i].position + k4[i].position) / 6f;
-                // tempObjects[i].velocity = yn[i].velocity + (k1[i].velocity + 2f * k2[i].velocity + 2f * k3[i].velocity + k4[i].velocity) / 6f;
                 tempObjects[i] = new Particle(
                     yn[i].position + (k1[i].position + 2f * k2[i].position + 2f * k3[i].position + k4[i].position) / 6f,
                     yn[i].velocity + (k1[i].velocity + 2f * k2[i].velocity + 2f * k3[i].velocity + k4[i].velocity) / 6f,
@@ -548,7 +499,7 @@ namespace BarnesHut
             ComputeCOM(root, objects);
         }
 
-        private void ComputeChangeAtIndexes(NativeArray<int> indexes, NativeArray<Particle> k, Dictionary<int, List<int>> interactionLists, double stepsize, NativeArray<Particle> objects)
+        /* private void ComputeChangeAtIndexes(NativeArray<int> indexes, NativeArray<Particle> k, Dictionary<int, List<int>> interactionLists, double stepsize, NativeArray<Particle> objects)
         {
             
             var tempList = new List<NativeArray<int>>();
@@ -581,7 +532,7 @@ namespace BarnesHut
             JobHandle.CompleteAll(jobHandles);
             jobHandles.Dispose();
             foreach (var l in tempList) l.Dispose();
-        }
+        } */
 
         private Dictionary<int, Particle> ComputeChangeAtIndexes(Dictionary<int, List<int>> interactionLists, double stepsize, List<Particle> objects)
         {
@@ -619,7 +570,7 @@ namespace BarnesHut
             return dydt;
         }
 
-        [BurstCompile(CompileSynchronously = true)]
+        /* [BurstCompile(CompileSynchronously = true)]
         private struct ComputeChangeJob : IJob
         {
             [ReadOnly] public NativeArray<Particle> jobObjects;
@@ -643,7 +594,7 @@ namespace BarnesHut
                 }
                 results[particleIndex] = new Particle(jobObjects[particleIndex].velocity, acc, 0);
             }
-        }
+        } */
 
         [BurstCompile(CompileSynchronously = true)]
         private struct RK4Job : IJobParallelFor
@@ -712,14 +663,70 @@ namespace BarnesHut
 
         private void FindInteractions()
         {
-            foreach (var l in interactionLists)
-                l.Clear();
-            for(int i = 0; i < this.NumObjects; i++)
+            if (useJobsSystem)
             {
-                var l = interactionLists[i];
-                FindInteractions(i, root, ref l);
-                //interactionLists.Add(l);
+                var interactionResults = new List<NativeList<int>>();
+                var jobHandles = new NativeList<JobHandle>(Allocator.TempJob);
+                var octreeNodes = root.ToNativeArray(objects.Count);
+                nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
+                
+                for (int i = 0; i < objects.Count; i++)
+                    nativeObjects[i] = objects[i];
+
+                for (int i = 0; i < NumObjects; i++)
+                {
+                    interactionResults.Add(new NativeList<int>(Allocator.TempJob));
+                    var job = new FindInteractionsJob {
+                        octree = octreeNodes,
+                        nativeObjects = nativeObjects,
+                        results = interactionResults[i],
+                        index = i,
+                        theta = theta
+                    };
+                    jobHandles.Add(job.Schedule());
+
+                    // var l = interactionLists[i];
+                    // l.Clear();
+                    // FindInteractions(i, root, ref l);
+                }
+                JobHandle.CompleteAll(jobHandles);
+
+                int totalInteractionsCount = 0;
+                foreach (var list in interactionResults)
+                    totalInteractionsCount += list.Length;
+
+                fullInteractionIndexes = new NativeArray<int>(totalInteractionsCount, Allocator.TempJob);
+                fullInteractions = new NativeArray<Particle>(totalInteractionsCount, Allocator.TempJob);
+                interactionSlices = new NativeArray<int2>(NumObjects, Allocator.TempJob);
+                
+                int counter = 0;
+                for (int i = 0; i < NumObjects; i++)
+                {
+                    var currList = interactionResults[i];
+                    // var currList = interactionLists[i];
+                    interactionSlices[i] = new int2(counter, currList.Length);
+                    for (int j = 0; j < currList.Length; j++)
+                    {
+                        fullInteractionIndexes[counter] = currList[j];
+                        fullInteractions[counter] = nativeObjects[currList[j]];
+                        counter += 1;
+                    }
+                    interactionResults[i].Dispose();
+                }
+                jobHandles.Dispose();
+                octreeNodes.Dispose();
             }
+            else
+            {
+                for(int i = 0; i < this.NumObjects; i++)
+                {
+                    var l = interactionLists[i];
+                    l.Clear();
+                    FindInteractions(i, root, ref l);
+                    //interactionLists.Add(l);
+                }
+            }
+            
         }
 
         private void FindInteractions(int index, OctreeNode node, ref List<int> list)
@@ -748,19 +755,55 @@ namespace BarnesHut
         }
 
         [BurstCompile(CompileSynchronously = true)]
-        private struct ComputeDistancesJob : IJob
+        private struct FindInteractionsJob : IJob
         {
-            NativeQueue<int2> indexQueue;
-            NativeHashMap<int2, double> magnitudes;
-            [ReadOnly] NativeArray<Particle> nativeObjects;
+            [ReadOnly] public NativeArray<OctreeStruct> octree;
+            [ReadOnly] public NativeArray<Particle> nativeObjects;
+            public NativeList<int> results;
+            [ReadOnly] public int index;
+            [ReadOnly] public double theta;
 
             public void Execute()
             {
-                int2 a = indexQueue.Dequeue();
-                var d = nativeObjects[a.x].position - nativeObjects[a.y].position;
-                magnitudes.TryAdd(a, math.length(d)); 
+                var ocIndexStack = new NativeList<int>(Allocator.Temp);
+                double dmag, s = 1;
+                OctreeStruct currentOctree;
+                ocIndexStack.Add(0);
+                
+                while (ocIndexStack.Length > 0)
+                {
+                    currentOctree = octree[ocIndexStack[ocIndexStack.Length - 1]];
+                    // ocIndexStack[ocIndexStack.Length - 1] = -1;
+                    ocIndexStack.RemoveAtSwapBack(ocIndexStack.Length - 1);
+
+                    if (index == currentOctree.index || currentOctree.index < 0)
+                        dmag = 0;
+                    else
+                    {
+                        s = currentOctree.octantSize * 2;
+                        var d = nativeObjects[index].position - nativeObjects[currentOctree.index].position;
+                        dmag = math.length(d);
+                    }
+
+                    if (dmag > 0 && (theta * dmag > s || !currentOctree.hasChildren) && currentOctree.index >= 0)
+                        results.Add(currentOctree.index);
+                    else if (currentOctree.hasChildren)
+                    {
+                        var c = currentOctree.children;
+                        if (c.c0.x >= 0) ocIndexStack.Add(c.c0.x);
+                        if (c.c0.y >= 0) ocIndexStack.Add(c.c0.y);
+                        if (c.c0.z >= 0) ocIndexStack.Add(c.c0.z);
+                        if (c.c0.w >= 0) ocIndexStack.Add(c.c0.w);
+                        if (c.c1.x >= 0) ocIndexStack.Add(c.c1.x);
+                        if (c.c1.y >= 0) ocIndexStack.Add(c.c1.y);
+                        if (c.c1.z >= 0) ocIndexStack.Add(c.c1.z);
+                        if (c.c1.w >= 0) ocIndexStack.Add(c.c1.w);
+                    }
+                }
+                ocIndexStack.Dispose();
             }
         }
+
 
         private int NearestNbhrIndex(int index, List<int> interactionList, List<Particle> objects)
         {
@@ -780,18 +823,18 @@ namespace BarnesHut
 
         private int FastestNbhrIndex(int index, List<int> interactionList, List<Particle> objects)
         {
-            double minSpeed = double.PositiveInfinity;
-            int minIndex = -1;
+            double maxSpeed = double.NegativeInfinity;
+            int maxIndex = -1;
             foreach(int i in interactionList)
             {
                 var speed = math.lengthsq(objects[index].velocity - objects[i].velocity);
-                if (speed < minSpeed)
+                if (speed > maxSpeed)
                 {
-                    minSpeed = speed;
-                    minIndex = i;
+                    maxSpeed = speed;
+                    maxIndex = i;
                 }
             }
-            return minIndex;
+            return maxIndex;
         }
 
         [BurstCompile(CompileSynchronously = true)]
@@ -808,9 +851,9 @@ namespace BarnesHut
             public void Execute(int index)
             {
                 double minDist = double.PositiveInfinity;
-                double minSpeed = double.PositiveInfinity;
-                int minIndexDist = -1;
-                int minIndexSpeed = -1;
+                double maxSpeed = 0;
+                int minIndexDist = -2;
+                int maxIndexSpeed = -2;
                 double dmag, speed;
                 int2 currList = interactionSlices[index];
                 for (int j = currList.x; j < currList.x + currList.y; j++)
@@ -823,13 +866,13 @@ namespace BarnesHut
                         minIndexDist = i;
                     }
                     speed = math.lengthsq(objects[index].velocity - objects[i].velocity);
-                    if (speed < minSpeed)
+                    if (speed >= maxSpeed)
                     {
-                        minSpeed = speed;
-                        minIndexSpeed = i;
+                        maxSpeed = speed;
+                        maxIndexSpeed = i;
                     }
                 }
-                results[index] = new int2(minIndexDist, minIndexSpeed);
+                results[index] = new int2(minIndexDist, maxIndexSpeed);
             }
         }
 
@@ -863,10 +906,10 @@ namespace BarnesHut
                 JobHandle jobHandle = jobs.Schedule(NumObjects, 4);
                 jobHandle.Complete();
             }
-            for (int i = 0; i < interactionLists.Count; i++)
+            for (int i = 0; i < NumObjects; i++)
             {
                 int nearestNbhrIndex, fastestNbhrIndex;
-                var l = interactionLists[i];
+                
                 if (useJobsSystem)
                 {
                     nearestNbhrIndex = results[i].x;
@@ -874,10 +917,11 @@ namespace BarnesHut
                 }
                 else
                 {
+                    var l = interactionLists[i];
                     nearestNbhrIndex = NearestNbhrIndex(i, l, objects);
                     fastestNbhrIndex = FastestNbhrIndex(i, l, objects);
                 }
-
+                Debug.Log("nearest/fastest: " + nearestNbhrIndex + "/" + fastestNbhrIndex + " of " + objects.Count);
                 var d = objects[nearestNbhrIndex].position - objects[i].position;
                 var v = objects[fastestNbhrIndex].velocity - objects[i].velocity;
 

@@ -13,10 +13,10 @@ namespace BarnesHut
         public int index;
 
         public OctreeNode[] children;
-        private OctreeNode root;
+        // private OctreeNode root;
         private bool _hasChildren;
 
-        public OctreeNode(double3 center, float octantSize, OctreeNode root)
+        public OctreeNode(double3 center, float octantSize)
         {
             this.center = center;
             this.octantSize = octantSize;
@@ -62,7 +62,7 @@ namespace BarnesHut
             if (children[octant] == null)
             {
                 var newCenter = octantSize/2 * octantVector(octant) + center;
-                children[octant] = new OctreeNode (newCenter, octantSize/2, this.root);
+                children[octant] = new OctreeNode (newCenter, octantSize/2);
             }
             _hasChildren = true;
             return children[octant].addBelowNode (newIndex, newObj, objects);
@@ -106,11 +106,11 @@ namespace BarnesHut
             }
         }
 
-        public NativeList<OctreeStruct> ToNativeList()
+        public NativeArray<OctreeStruct> ToNativeArray(int numResults)
         {
             int4x2 childrenInt4x2;
             OctreeNode current;
-            var result = new NativeList<OctreeStruct>(Allocator.TempJob);
+            var result = new NativeArray<OctreeStruct>(numResults, Allocator.TempJob);
             var s = new Stack<OctreeNode>();
             s.Push(this);
 
@@ -138,7 +138,8 @@ namespace BarnesHut
                 {
                     childrenInt4x2 = -1;
                 }
-                result.Add(new OctreeStruct(current.center, current.octantSize, current.index, childrenInt4x2));
+                // Position in result must match position in nativeObjects
+                result[current.index] = (new OctreeStruct(current.center, current.octantSize, current.index, childrenInt4x2));
             }
             return result;
         }
