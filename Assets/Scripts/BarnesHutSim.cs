@@ -47,6 +47,8 @@ namespace BarnesHut
         private List<double> t3stepsizes;
         private List<int> stepcounts;
         //private List<data> newObjects;
+        private int totalJobsRun = 0;
+        private int jobHandleCount = 0;
 
         public static double G => g;
 
@@ -86,6 +88,10 @@ namespace BarnesHut
                     (float)(objects[i].position.x), (float)objects[i].position.y, (float)objects[i].position.z);
                     
             Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
+            // Debug.Log("Average jobs per batch:" + (float)(totalJobsRun) / jobHandleCount);
+            // totalJobsRun = 0;
+            // jobHandleCount = 0;
+
             if (drawOctants)
             {
                 //TODO draw octant grid
@@ -273,15 +279,79 @@ namespace BarnesHut
                         tier += 1;
                     tiers.Add(tier);
                 }
-                // if(useJobsSystem)
-                //     nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
-                
                 int maxTier = tiers.Max();
+                // double minStepsize = f * fixedDeltaTime / (1 << maxTier);
+                
+                
+                if(useJobsSystem)
+                {
+                    nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
+                    for (int i = 0; i < objects.Count; i++)
+                        nativeObjects[i] = objects[i];
+
+                    int totalInteractionsCount = 0;
+                    foreach (var list in interactionLists)
+                        totalInteractionsCount += list.Count;
+                    var results = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
+                    var numIterations = new NativeArray<int>(NumObjects, Allocator.TempJob);
+                    var fullInteractions = new NativeArray<Particle>(totalInteractionsCount, Allocator.TempJob);
+                    var interactionSlices = new NativeArray<int2>(NumObjects, Allocator.TempJob);
+                    var stepsizes = new NativeArray<double>(NumObjects, Allocator.TempJob);
+                    int counter = 0;
+                    for (int i = 0; i < NumObjects; i++)
+                    {
+                        numIterations[i] = 1 << tiers[i];
+                        // stepsizes[i] = minStepsize * (maxTier - tiers[i] + 1);
+                        var currList = interactionLists[i];
+                        interactionSlices[i] = new int2(counter, currList.Count);
+                        for (int j = 0; j < currList.Count; j++)
+                        {
+                            fullInteractions[counter] = objects[currList[j]];
+                            counter += 1;
+                        }
+                    }
+                    
+                    var jobs = new RK4Job
+                    {
+                        fullStepsize = f * fixedDeltaTime,
+                        numIterations = numIterations,
+                        results = results,
+                        otherParticlesSlices = interactionSlices,
+                        fullInteractions = fullInteractions,
+                        objects = nativeObjects,
+                    };
+                    JobHandle jobHandle = jobs.Schedule(NumObjects, 4);
+                    jobHandle.Complete();
+
+                    // if (jobHandles.Length > 0)
+                    // {
+                    //     jobHandleCount += 1;
+                    //     totalJobsRun += jobHandles.Length;
+                    // }
+                    // JobHandle.CompleteAll(jobHandles);
+                    // jobHandles.Dispose();
+
+                    for (int i = 0; i < NumObjects; i++)
+                    {
+                        objects[i] = results[i];
+                        // interactionNativeArrays[i].Dispose();
+                    }
+                    nativeObjects.Dispose();
+                    results.Dispose();
+                    numIterations.Dispose();
+                    fullInteractions.Dispose();
+                    interactionSlices.Dispose();
+                    stepsizes.Dispose();
+                    if (objects.Count > NumObjects)
+                        objects.RemoveRange(NumObjects, objects.Count - NumObjects);
+                    return;
+                }
+                
+                /*
                 var tierDicts = new Dictionary<int, Dictionary<int, List<int>>>();
                 Dictionary<int, List<int>> d;
                 int stepcount = 0;
                 tier = maxTier;
-                double minStepsize = f * fixedDeltaTime / (1 << maxTier);
                 Dictionary<int, Particle> newObjects;
 
                 while(stepcount < 1 << maxTier || tier < maxTier)
@@ -302,13 +372,27 @@ namespace BarnesHut
                     {
                         double stepsize = minStepsize * (1 << (maxTier - tier));
                         if (useJobsSystem)
+                        {
                             newObjects = RK4ParallelJobs(stepsize, d, objects);
+                            foreach (var kv in newObjects)
+                            {
+                                objects[kv.Key] = kv.Value;
+                                nativeObjects[kv.Key] = kv.Value;
+                            }
+                        }
                         else
+                        {
                             newObjects = RK4(stepsize, d, objects);
-                        foreach (var kv in newObjects)
-                            objects[kv.Key] = kv.Value;
+                            foreach (var kv in newObjects)
+                                objects[kv.Key] = kv.Value;
+                        }
                         
                         ComputeCOM();
+                        if (useJobsSystem)
+                        {
+                            for (int i = NumObjects; i < objects.Count; i++)
+                                nativeObjects[i] = objects[i];
+                        }
                     }
 
                     if (tier == maxTier)
@@ -320,7 +404,13 @@ namespace BarnesHut
                 }
                 
                 // Debug.Log("tierDicts: " + string.Join( ",", tierDicts.Keys));
-                objects.RemoveRange(NumObjects, objects.Count - NumObjects);
+                // objects.RemoveRange(NumObjects, objects.Count - NumObjects);
+                if(useJobsSystem)
+                {
+                    for (int i = 0; i < NumObjects; i++)
+                        objects[i] = nativeObjects[i];
+                    nativeObjects.Dispose();
+                } */
             }
             else
             {
@@ -331,8 +421,6 @@ namespace BarnesHut
                 objects = newObjects;
             }
 
-            // if(useJobsSystem)
-            //     nativeObjects.Dispose();
             if (objects.Count > NumObjects)
                 objects.RemoveRange(NumObjects, objects.Count - NumObjects);
         }
@@ -508,9 +596,9 @@ namespace BarnesHut
 
         private Dictionary<int, Particle> RK4ParallelJobs(double stepsize, Dictionary<int, List<int>> interactionLists, List<Particle> yn)
         {
-            var tempObjects = new NativeArray<Particle>(yn.Count, Allocator.TempJob);
-            for (int i = 0; i < yn.Count; i++)
-                tempObjects[i] = new Particle(yn[i]);
+            // var nativeObjects = new NativeArray<Particle>(yn.Count, Allocator.TempJob);
+            // for (int i = 0; i < yn.Count; i++)
+                // nativeObjects[i] = new Particle(yn[i]);
             var k = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
             var ksum = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
             var indexes = new NativeArray<int>(interactionLists.Count, Allocator.TempJob);
@@ -523,26 +611,26 @@ namespace BarnesHut
             }
 
             //k1 = h * f(0, yn);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, 0, tempObjects);
-            rk4stepnum(stepsize, 1, indexes, k, yn, tempObjects);
-            ComputeCOM(root, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, 0, nativeObjects);
+            rk4stepnum(stepsize, 1, indexes, k, yn, nativeObjects);
+            ComputeCOM(root, nativeObjects);
             for (int i = 0; i < k.Length; i++) ksum[i] += k[i];
 
             //k2 = h * f(h/2, yn + k1 / 2);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, tempObjects);
-            rk4stepnum(stepsize, 2, indexes, k, yn, tempObjects);
-            ComputeCOM(root, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, nativeObjects);
+            rk4stepnum(stepsize, 2, indexes, k, yn, nativeObjects);
+            ComputeCOM(root, nativeObjects);
             for (int i = 0; i < k.Length; i++) ksum[i] += 2d * k[i];
 
             //k3 = h * f(h/2, yn + k2 / 2);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, tempObjects);
-            rk4stepnum(stepsize, 3, indexes, k, yn, tempObjects);
-            ComputeCOM(root, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, nativeObjects);
+            rk4stepnum(stepsize, 3, indexes, k, yn, nativeObjects);
+            ComputeCOM(root, nativeObjects);
             for (int i = 0; i < k.Length; i++) ksum[i] += 2d * k[i];
             
             //k4 = h * f(h, yn + k3);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize, tempObjects);
-            rk4stepnum(stepsize, 4, indexes, k, yn, tempObjects);
+            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize, nativeObjects);
+            rk4stepnum(stepsize, 4, indexes, k, yn, nativeObjects);
             for (int i = 0; i < k.Length; i++) ksum[i] += k[i];
 
             var results = new Dictionary<int, Particle>();
@@ -553,7 +641,7 @@ namespace BarnesHut
             }
             k.Dispose();
             ksum.Dispose();
-            tempObjects.Dispose();
+            // nativeObjects.Dispose();
             indexes.Dispose();
             return results;
         }
@@ -588,7 +676,11 @@ namespace BarnesHut
                 };
                 jobHandles[i] = job.Schedule();
             }
-            
+            if (jobHandles.Length > 0)
+            {
+                jobHandleCount += 1;
+                totalJobsRun += jobHandles.Length;
+            }
             JobHandle.CompleteAll(jobHandles);
             jobHandles.Dispose();
             foreach (var l in tempList) l.Dispose();
@@ -653,6 +745,71 @@ namespace BarnesHut
                     acc += G * jobObjects[gravSourceIndex].mass / (dmag*dmag*dmag) * d;
                 }
                 results[particleIndex] = new Particle(jobObjects[particleIndex].velocity, acc, 0);
+            }
+        }
+
+        [BurstCompile(CompileSynchronously = true)]
+        private struct RK4Job : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<Particle> objects;
+            [ReadOnly] public NativeArray<int2> otherParticlesSlices;
+            [ReadOnly] public NativeArray<int> numIterations;
+            [ReadOnly] public NativeArray<Particle> fullInteractions;
+            // [ReadOnly] public NativeArray<double> stepsizes;
+            public double fullStepsize;
+
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<Particle> results;
+
+            public void Execute(int particleIndex)
+            {
+                var currSlice = otherParticlesSlices[particleIndex];
+                NativeSlice<Particle> otherParticles = new NativeSlice<Particle>(fullInteractions, currSlice.x, currSlice.y);
+                Particle particle;
+                Particle k = default(Particle), ksum = default(Particle);
+                int rk4iteration;
+                double3 acc, d;
+                double dmag, temptime, time = 0, stepsize = fullStepsize / numIterations[particleIndex];
+                results[particleIndex] = objects[particleIndex];
+
+                for (int i = 0; i < numIterations[particleIndex]; i++)
+                {
+                    for (rk4iteration = 1; rk4iteration <= 4; rk4iteration++)
+                    {
+                        acc = new double3(0);
+                        if (rk4iteration == 1)
+                        {
+                            temptime = time;
+                            particle = results[particleIndex];
+                        }
+                        else if (rk4iteration == 2 || rk4iteration == 3)
+                        {
+                            temptime = time + 0.5d * stepsize;
+                            particle = results[particleIndex] + 0.5d * stepsize * k;
+                        }
+                        else
+                        {
+                            temptime = time + stepsize;
+                            particle = results[particleIndex] + stepsize * k;
+                        }
+
+                        for (int j = 0; j < otherParticles.Length; j++)
+                        {
+                            d = otherParticles[j].position + otherParticles[j].velocity * temptime - particle.position;
+                            dmag = math.length(d);
+                            
+                            acc += G * otherParticles[j].mass / (dmag*dmag*dmag) * d;
+                        }
+                        
+                        k = new Particle(particle.velocity, acc, 0);
+                        if (rk4iteration == 1 || rk4iteration == 4)
+                            ksum += k;
+                        else
+                            ksum += 2 * k;
+                    }
+                    time += stepsize;
+                    results[particleIndex] = results[particleIndex] + stepsize / 6d * ksum;
+                }
             }
         }
 
@@ -723,6 +880,40 @@ namespace BarnesHut
                 }
             }
             return minIndex;
+        }
+
+        private struct NearestFastestNbhrIndexes : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<Particle> objects;
+            [ReadOnly] public NativeArray<Particle> fullInteractions;
+            [ReadOnly] public NativeArray<Particle> interactionSlices;
+
+            [NativeDisableContainerSafetyRestriction]
+            public NativeArray<int2> results;
+
+            void Execute(int index)
+            {
+                double minDist = double.PositiveInfinity;
+                double minSpeed = double.PositiveInfinity;
+                int minIndexDist = -1;
+                int minIndexSpeed = -1;
+                foreach(int i in interactionList)
+                {
+                    var dmag = math.lengthsq(objects[index].position - objects[i].position);
+                    if (dmag < minDist)
+                    {
+                        minDist = dmag;
+                        minIndexDist = i;
+                    }
+                    var speed = math.lengthsq(objects[index].velocity - objects[i].velocity);
+                    if (speed < minSpeed)
+                    {
+                        minSpeed = speed;
+                        minIndexSpeed = i;
+                    }
+                }
+                results[index] = new int2(minIndexDist, minIndexSpeed);
+            }
         }
 
         private double TotalEnergy()

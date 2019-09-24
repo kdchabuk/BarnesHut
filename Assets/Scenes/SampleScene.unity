@@ -150,16 +150,16 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   prefab: {fileID: 1557604467519409928, guid: 9d8a79eb4e10dbb2380fc488251b899b, type: 3}
-  useJobsSystem: 1
+  useJobsSystem: 0
   useMultiTimeStep: 1
   reverseTime: 0
   drawOctants: 0
-  theta: 0.2
+  theta: 0.1
   alphaTimeStep: 0.005
   fixedDeltaTime: 0.01
-  NumObjects: 10
+  NumObjects: 50
   _seed: 1
-  _maxTimeTier: 10
+  _maxTimeTier: 2
 --- !u!4 &669548761
 Transform:
   m_ObjectHideFlags: 0
