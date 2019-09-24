@@ -107,8 +107,11 @@ namespace BarnesHut
                 return;
             
             float startTime = Time.realtimeSinceStartup;
-            
-            Step();
+
+            BuildTree();
+            ComputeCOM();
+            FindInteractions();
+            Step();            
             //Debug.Log((Time.realtimeSinceStartup - startTime) * 1000f + "ms");
             
 
@@ -226,16 +229,16 @@ namespace BarnesHut
                 }
             }
         }
-        static private void ComputeCOM(OctreeNode node, NativeArray<Particle> objects)
+        static private void ComputeCOM(OctreeNode node, NativeList<Particle> objects)
         {
             if (node.hasChildren())
             {
                 // Internal node: set index to reference a new object
-                /* if (node.index < 0)
+                if (node.index < 0)
                 {
-                    node.index = objects.Count;
+                    node.index = objects.Length;
                     objects.Add(default(Particle));
-                } */
+                }
 
                 var mass = 0d;
                 var com = new double3(0);
@@ -264,10 +267,6 @@ namespace BarnesHut
 
         private void Step()
         {
-            BuildTree();
-            ComputeCOM();
-            FindInteractions();
-
             if (useJobsSystem)
             {
                 nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
@@ -544,58 +543,6 @@ namespace BarnesHut
             return tempObjects;
         }
 
-        private Dictionary<int, Particle> RK4ParallelJobs(double stepsize, Dictionary<int, List<int>> interactionLists, List<Particle> yn)
-        {
-            // var nativeObjects = new NativeArray<Particle>(yn.Count, Allocator.TempJob);
-            // for (int i = 0; i < yn.Count; i++)
-                // nativeObjects[i] = new Particle(yn[i]);
-            var k = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
-            var ksum = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
-            var indexes = new NativeArray<int>(interactionLists.Count, Allocator.TempJob);
-
-            int j = 0;
-            foreach (int i in interactionLists.Keys)
-            {
-                indexes[j] = i;
-                j += 1;
-            }
-
-            //k1 = h * f(0, yn);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, 0, nativeObjects);
-            rk4stepnum(stepsize, 1, indexes, k, yn, nativeObjects);
-            ComputeCOM(root, nativeObjects);
-            for (int i = 0; i < k.Length; i++) ksum[i] += k[i];
-
-            //k2 = h * f(h/2, yn + k1 / 2);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, nativeObjects);
-            rk4stepnum(stepsize, 2, indexes, k, yn, nativeObjects);
-            ComputeCOM(root, nativeObjects);
-            for (int i = 0; i < k.Length; i++) ksum[i] += 2d * k[i];
-
-            //k3 = h * f(h/2, yn + k2 / 2);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize * 0.5, nativeObjects);
-            rk4stepnum(stepsize, 3, indexes, k, yn, nativeObjects);
-            ComputeCOM(root, nativeObjects);
-            for (int i = 0; i < k.Length; i++) ksum[i] += 2d * k[i];
-            
-            //k4 = h * f(h, yn + k3);
-            ComputeChangeAtIndexes(indexes, k, interactionLists, stepsize, nativeObjects);
-            rk4stepnum(stepsize, 4, indexes, k, yn, nativeObjects);
-            for (int i = 0; i < k.Length; i++) ksum[i] += k[i];
-
-            var results = new Dictionary<int, Particle>();
-            foreach (int i in interactionLists.Keys)
-            {
-                //yn + (k1 + 2 * k2 + 2 * k3 + k4) / 6.0;
-                results.Add(i, yn[i] + ksum[i] * (1d/6d));
-            }
-            k.Dispose();
-            ksum.Dispose();
-            // nativeObjects.Dispose();
-            indexes.Dispose();
-            return results;
-        }
-
         private void ComputeCOM()
         {
             ComputeCOM(root, objects);
@@ -679,7 +626,7 @@ namespace BarnesHut
             [ReadOnly] public NativeArray<int> interactionIndexes;
             public int particleIndex;
             public double stepsize;
-            [NativeDisableContainerSafetyRestriction]
+            [WriteOnly]
             public NativeSlice<Particle> results;
 
             public void Execute()
@@ -705,22 +652,21 @@ namespace BarnesHut
             [ReadOnly] public NativeArray<int2> otherParticlesSlices;
             [ReadOnly] public NativeArray<int> numIterations;
             [ReadOnly] public NativeArray<Particle> fullInteractions;
-            // [ReadOnly] public NativeArray<double> stepsizes;
             public double fullStepsize;
 
-            [NativeDisableContainerSafetyRestriction]
+            [WriteOnly]
             public NativeArray<Particle> results;
 
             public void Execute(int particleIndex)
             {
                 var currSlice = otherParticlesSlices[particleIndex];
                 NativeSlice<Particle> otherParticles = new NativeSlice<Particle>(fullInteractions, currSlice.x, currSlice.y);
-                Particle particle;
+                Particle particle, iterStartParticle;
                 Particle k = default(Particle), ksum = default(Particle);
                 int rk4iteration;
                 double3 acc, d;
                 double dmag, temptime, time = 0, stepsize = fullStepsize / numIterations[particleIndex];
-                results[particleIndex] = objects[particleIndex];
+                iterStartParticle = objects[particleIndex];
 
                 for (int i = 0; i < numIterations[particleIndex]; i++)
                 {
@@ -730,17 +676,17 @@ namespace BarnesHut
                         if (rk4iteration == 1)
                         {
                             temptime = time;
-                            particle = results[particleIndex];
+                            particle = iterStartParticle;
                         }
                         else if (rk4iteration == 2 || rk4iteration == 3)
                         {
                             temptime = time + 0.5d * stepsize;
-                            particle = results[particleIndex] + 0.5d * stepsize * k;
+                            particle = iterStartParticle + 0.5d * stepsize * k;
                         }
                         else
                         {
                             temptime = time + stepsize;
-                            particle = results[particleIndex] + stepsize * k;
+                            particle = iterStartParticle + stepsize * k;
                         }
 
                         for (int j = 0; j < otherParticles.Length; j++)
@@ -758,8 +704,9 @@ namespace BarnesHut
                             ksum += 2 * k;
                     }
                     time += stepsize;
-                    results[particleIndex] = results[particleIndex] + stepsize / 6d * ksum;
+                    iterStartParticle = iterStartParticle + stepsize / 6d * ksum;
                 }
+                results[particleIndex] = iterStartParticle;
             }
         }
 
@@ -797,6 +744,21 @@ namespace BarnesHut
                     if (child != null)
                         FindInteractions(index, child, ref list);
                 }
+            }
+        }
+
+        [BurstCompile(CompileSynchronously = true)]
+        private struct ComputeDistancesJob : IJob
+        {
+            NativeQueue<int2> indexQueue;
+            NativeHashMap<int2, double> magnitudes;
+            [ReadOnly] NativeArray<Particle> nativeObjects;
+
+            public void Execute()
+            {
+                int2 a = indexQueue.Dequeue();
+                var d = nativeObjects[a.x].position - nativeObjects[a.y].position;
+                magnitudes.TryAdd(a, math.length(d)); 
             }
         }
 

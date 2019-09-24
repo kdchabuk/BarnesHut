@@ -31,7 +31,7 @@ namespace BarnesHut
         public double3 center;
         public int index;
 
-        public OctreeNode[] children = new OctreeNode[8];
+        public OctreeNode[] children;
         private OctreeNode root;
         private bool _hasChildren;
 
@@ -42,6 +42,7 @@ namespace BarnesHut
             //this.root = root;
             this.index = -1;
             this._hasChildren = false;
+            this.children = new OctreeNode[8];
         }
     
         public bool bounds(double3 v)
