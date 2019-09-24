@@ -2,29 +2,10 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Unity.Mathematics;
+using Unity.Collections;
 
 namespace BarnesHut
 {
-    /* public class Particle
-    {
-        public Vector3d position;
-        public Vector3d velocity;
-        public double mass;
-
-        public Particle(Vector3d pos, Vector3d vel, double mass)
-        {
-            position = pos;
-            velocity = vel;
-            this.mass = mass;
-        }
-        public Particle(Particle d)
-        {
-            this.position = d.position;
-            this.velocity = d.velocity;
-            this.mass = d.mass;
-        }
-    } */
-
     public class OctreeNode
     { 
         public float octantSize;
@@ -123,6 +104,43 @@ namespace BarnesHut
                 }
                 return min;
             }
+        }
+
+        public NativeList<OctreeStruct> ToNativeList()
+        {
+            int4x2 childrenInt4x2;
+            OctreeNode current;
+            var result = new NativeList<OctreeStruct>(Allocator.TempJob);
+            var s = new Stack<OctreeNode>();
+            s.Push(this);
+
+            while (s.Count > 0)
+            {
+                current = s.Pop();
+                
+                if (hasChildren())
+                {
+                    foreach (var child in current.children)
+                        if (child != null)
+                            s.Push(child);
+                    childrenInt4x2 = new int4x2(
+                        (current.children[0] != null ? current.children[0].index : -1),
+                        (current.children[1] != null ? current.children[1].index : -1),
+                        (current.children[2] != null ? current.children[2].index : -1),
+                        (current.children[3] != null ? current.children[3].index : -1),
+                        (current.children[4] != null ? current.children[4].index : -1),
+                        (current.children[5] != null ? current.children[5].index : -1),
+                        (current.children[6] != null ? current.children[6].index : -1),
+                        (current.children[7] != null ? current.children[7].index : -1)
+                    );
+                }
+                else
+                {
+                    childrenInt4x2 = -1;
+                }
+                result.Add(new OctreeStruct(current.center, current.octantSize, current.index, childrenInt4x2));
+            }
+            return result;
         }
     }
 }
