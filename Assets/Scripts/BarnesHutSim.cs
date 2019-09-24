@@ -37,7 +37,10 @@ namespace BarnesHut
         
         private List<Particle> objects;
         private NativeArray<Particle> nativeObjects;
-        
+        private NativeArray<int> fullInteractionIndexes;
+        private NativeArray<Particle> fullInteractions;
+        private NativeArray<int2> interactionSlices;
+
         private List<List<int>> interactionLists;
         private OctreeNode root;
         private float minOctantSize;
@@ -46,9 +49,7 @@ namespace BarnesHut
         private List<double> t2stepsizes;
         private List<double> t3stepsizes;
         private List<int> stepcounts;
-        //private List<data> newObjects;
-        private int totalJobsRun = 0;
-        private int jobHandleCount = 0;
+        
 
         public static double G => g;
 
@@ -84,8 +85,10 @@ namespace BarnesHut
         void Update()
         {
             for (int i = 0; i < NumObjects; i++)
-                gameObjects[i].transform.position = new Vector3(
-                    (float)(objects[i].position.x), (float)objects[i].position.y, (float)objects[i].position.z);
+            {
+                var r = new float3(objects[i].position);
+                gameObjects[i].transform.position = new Vector3(r.x, r.y, r.z);
+            }
                     
             Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
             // Debug.Log("Average jobs per batch:" + (float)(totalJobsRun) / jobHandleCount);
@@ -264,13 +267,44 @@ namespace BarnesHut
             BuildTree();
             ComputeCOM();
             FindInteractions();
-            ComputeStepcounts();
+
+            if (useJobsSystem)
+            {
+                nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
+                
+                for (int i = 0; i < objects.Count; i++)
+                    nativeObjects[i] = objects[i];
+                int totalInteractionsCount = 0;
+                foreach (var list in interactionLists)
+                    totalInteractionsCount += list.Count;
+
+                fullInteractionIndexes = new NativeArray<int>(totalInteractionsCount, Allocator.TempJob);
+                fullInteractions = new NativeArray<Particle>(totalInteractionsCount, Allocator.TempJob);
+                interactionSlices = new NativeArray<int2>(NumObjects, Allocator.TempJob);
+                
+
+                int counter = 0;
+                for (int i = 0; i < NumObjects; i++)
+                {
+                    var currList = interactionLists[i];
+                    interactionSlices[i] = new int2(counter, currList.Count);
+                    for (int j = 0; j < currList.Count; j++)
+                    {
+                        fullInteractionIndexes[counter] = currList[j];
+                        fullInteractions[counter] = objects[currList[j]];
+                        counter += 1;
+                    }
+                }
+            }
+            
 
             int f = reverseTime ? -1 : 1;
+            var tiers = new List<int>();
             if(useMultiTimeStep)
             {
+                ComputeStepcounts();
                 int tier;
-                var tiers = new List<int>();
+                
                 for (int i = 0; i < stepcounts.Count; i++)
                 {
                     var x = math.ceilpow2(stepcounts[i]);
@@ -279,138 +313,54 @@ namespace BarnesHut
                         tier += 1;
                     tiers.Add(tier);
                 }
-                int maxTier = tiers.Max();
-                // double minStepsize = f * fixedDeltaTime / (1 << maxTier);
-                
-                
-                if(useJobsSystem)
-                {
-                    nativeObjects = new NativeArray<Particle>(objects.Count, Allocator.TempJob);
-                    for (int i = 0; i < objects.Count; i++)
-                        nativeObjects[i] = objects[i];
+            }
 
-                    int totalInteractionsCount = 0;
-                    foreach (var list in interactionLists)
-                        totalInteractionsCount += list.Count;
-                    var results = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
-                    var numIterations = new NativeArray<int>(NumObjects, Allocator.TempJob);
-                    var fullInteractions = new NativeArray<Particle>(totalInteractionsCount, Allocator.TempJob);
-                    var interactionSlices = new NativeArray<int2>(NumObjects, Allocator.TempJob);
-                    var stepsizes = new NativeArray<double>(NumObjects, Allocator.TempJob);
-                    int counter = 0;
-                    for (int i = 0; i < NumObjects; i++)
-                    {
+            if (useJobsSystem)
+            {
+                var results = new NativeArray<Particle>(NumObjects, Allocator.TempJob);
+                var numIterations = new NativeArray<int>(NumObjects, Allocator.TempJob);
+
+                for (int i = 0; i < NumObjects; i++)
+                {
+                    if (useMultiTimeStep)
                         numIterations[i] = 1 << tiers[i];
-                        // stepsizes[i] = minStepsize * (maxTier - tiers[i] + 1);
-                        var currList = interactionLists[i];
-                        interactionSlices[i] = new int2(counter, currList.Count);
-                        for (int j = 0; j < currList.Count; j++)
-                        {
-                            fullInteractions[counter] = objects[currList[j]];
-                            counter += 1;
-                        }
-                    }
-                    
-                    var jobs = new RK4Job
-                    {
-                        fullStepsize = f * fixedDeltaTime,
-                        numIterations = numIterations,
-                        results = results,
-                        otherParticlesSlices = interactionSlices,
-                        fullInteractions = fullInteractions,
-                        objects = nativeObjects,
-                    };
-                    JobHandle jobHandle = jobs.Schedule(NumObjects, 4);
-                    jobHandle.Complete();
-
-                    // if (jobHandles.Length > 0)
+                    else
+                        numIterations[i] = 1;
+                    // stepsizes[i] = minStepsize * (maxTier - tiers[i] + 1);
+                    // var currList = interactionLists[i];
+                    // interactionSlices[i] = new int2(counter, currList.Count);
+                    // for (int j = 0; j < currList.Count; j++)
                     // {
-                    //     jobHandleCount += 1;
-                    //     totalJobsRun += jobHandles.Length;
+                    //     fullInteractions[counter] = objects[currList[j]];
+                    //     counter += 1;
                     // }
-                    // JobHandle.CompleteAll(jobHandles);
-                    // jobHandles.Dispose();
-
-                    for (int i = 0; i < NumObjects; i++)
-                    {
-                        objects[i] = results[i];
-                        // interactionNativeArrays[i].Dispose();
-                    }
-                    nativeObjects.Dispose();
-                    results.Dispose();
-                    numIterations.Dispose();
-                    fullInteractions.Dispose();
-                    interactionSlices.Dispose();
-                    stepsizes.Dispose();
-                    if (objects.Count > NumObjects)
-                        objects.RemoveRange(NumObjects, objects.Count - NumObjects);
-                    return;
                 }
-                
-                /*
-                var tierDicts = new Dictionary<int, Dictionary<int, List<int>>>();
-                Dictionary<int, List<int>> d;
-                int stepcount = 0;
-                tier = maxTier;
-                Dictionary<int, Particle> newObjects;
 
-                while(stepcount < 1 << maxTier || tier < maxTier)
+                var jobs = new RK4Job
                 {
-                    if (tierDicts.ContainsKey(tier))
-                        d = tierDicts[tier];
-                    else
-                    {
-                        d = new Dictionary<int, List<int>>();
-                        for (int i = 0; i < tiers.Count; i++)
-                            if (tiers[i] == tier)
-                            {
-                                d.Add(i, interactionLists[i]);
-                            }
-                        tierDicts.Add(tier, d);
-                    }
-                    if (d.Count > 0)
-                    {
-                        double stepsize = minStepsize * (1 << (maxTier - tier));
-                        if (useJobsSystem)
-                        {
-                            newObjects = RK4ParallelJobs(stepsize, d, objects);
-                            foreach (var kv in newObjects)
-                            {
-                                objects[kv.Key] = kv.Value;
-                                nativeObjects[kv.Key] = kv.Value;
-                            }
-                        }
-                        else
-                        {
-                            newObjects = RK4(stepsize, d, objects);
-                            foreach (var kv in newObjects)
-                                objects[kv.Key] = kv.Value;
-                        }
-                        
-                        ComputeCOM();
-                        if (useJobsSystem)
-                        {
-                            for (int i = NumObjects; i < objects.Count; i++)
-                                nativeObjects[i] = objects[i];
-                        }
-                    }
+                    fullStepsize = f * fixedDeltaTime,
+                    numIterations = numIterations,
+                    results = results,
+                    otherParticlesSlices = interactionSlices,
+                    fullInteractions = fullInteractions,
+                    objects = nativeObjects,
+                };
+                JobHandle jobHandle = jobs.Schedule(NumObjects, 4);
+                jobHandle.Complete();
 
-                    if (tier == maxTier)
-                        stepcount += 1;
-                    if (stepcount % (1 << (maxTier - tier + 1)) == 0)
-                        tier -= 1;
-                    else
-                        tier = maxTier;
+                for (int i = 0; i < NumObjects; i++)
+                {
+                    objects[i] = results[i];
                 }
-                
-                // Debug.Log("tierDicts: " + string.Join( ",", tierDicts.Keys));
-                // objects.RemoveRange(NumObjects, objects.Count - NumObjects);
-                if(useJobsSystem)
-                {
-                    for (int i = 0; i < NumObjects; i++)
-                        objects[i] = nativeObjects[i];
-                    nativeObjects.Dispose();
-                } */
+                nativeObjects.Dispose();
+                results.Dispose();
+                numIterations.Dispose();
+                fullInteractions.Dispose();
+                fullInteractionIndexes.Dispose();
+                interactionSlices.Dispose();
+                if (objects.Count > NumObjects)
+                    objects.RemoveRange(NumObjects, objects.Count - NumObjects);
+                return;
             }
             else
             {
@@ -676,11 +626,11 @@ namespace BarnesHut
                 };
                 jobHandles[i] = job.Schedule();
             }
-            if (jobHandles.Length > 0)
-            {
-                jobHandleCount += 1;
-                totalJobsRun += jobHandles.Length;
-            }
+            // if (jobHandles.Length > 0)
+            // {
+            //     jobHandleCount += 1;
+            //     totalJobsRun += jobHandles.Length;
+            // }
             JobHandle.CompleteAll(jobHandles);
             jobHandles.Dispose();
             foreach (var l in tempList) l.Dispose();
@@ -882,30 +832,35 @@ namespace BarnesHut
             return minIndex;
         }
 
+        [BurstCompile(CompileSynchronously = true)]
         private struct NearestFastestNbhrIndexes : IJobParallelFor
         {
             [ReadOnly] public NativeArray<Particle> objects;
-            [ReadOnly] public NativeArray<Particle> fullInteractions;
-            [ReadOnly] public NativeArray<Particle> interactionSlices;
+            [ReadOnly] public NativeArray<int> fullInteractionIndexes;
+            [ReadOnly] public NativeArray<int2> interactionSlices;
 
-            [NativeDisableContainerSafetyRestriction]
+            // [NativeDisableContainerSafetyRestriction]
+            [WriteOnly]
             public NativeArray<int2> results;
 
-            void Execute(int index)
+            public void Execute(int index)
             {
                 double minDist = double.PositiveInfinity;
                 double minSpeed = double.PositiveInfinity;
                 int minIndexDist = -1;
                 int minIndexSpeed = -1;
-                foreach(int i in interactionList)
+                double dmag, speed;
+                int2 currList = interactionSlices[index];
+                for (int j = currList.x; j < currList.x + currList.y; j++)
                 {
-                    var dmag = math.lengthsq(objects[index].position - objects[i].position);
+                    int i = fullInteractionIndexes[j];
+                    dmag = math.lengthsq(objects[index].position - objects[i].position);
                     if (dmag < minDist)
                     {
                         minDist = dmag;
                         minIndexDist = i;
                     }
-                    var speed = math.lengthsq(objects[index].velocity - objects[i].velocity);
+                    speed = math.lengthsq(objects[index].velocity - objects[i].velocity);
                     if (speed < minSpeed)
                     {
                         minSpeed = speed;
@@ -933,12 +888,35 @@ namespace BarnesHut
             t2stepsizes.Clear();
             t3stepsizes.Clear();
             stepcounts.Clear();
+            var results = new NativeArray<int2>(NumObjects, Allocator.TempJob);
+            if (useJobsSystem)
+            {
+                var jobs = new NearestFastestNbhrIndexes
+                {
+                    results = results,
+                    interactionSlices = interactionSlices,
+                    fullInteractionIndexes = fullInteractionIndexes,
+                    objects = nativeObjects,
+                };
+                JobHandle jobHandle = jobs.Schedule(NumObjects, 4);
+                jobHandle.Complete();
+            }
             for (int i = 0; i < interactionLists.Count; i++)
             {
+                int nearestNbhrIndex, fastestNbhrIndex;
                 var l = interactionLists[i];
-                var nearestNbhrIndex = NearestNbhrIndex(i, l, objects);
+                if (useJobsSystem)
+                {
+                    nearestNbhrIndex = results[i].x;
+                    fastestNbhrIndex = results[i].y;
+                }
+                else
+                {
+                    nearestNbhrIndex = NearestNbhrIndex(i, l, objects);
+                    fastestNbhrIndex = FastestNbhrIndex(i, l, objects);
+                }
+
                 var d = objects[nearestNbhrIndex].position - objects[i].position;
-                var fastestNbhrIndex = FastestNbhrIndex(i, l, objects);
                 var v = objects[fastestNbhrIndex].velocity - objects[i].velocity;
 
                 // From Pfalzner Gibbon, p. 66, equation 4.2 and 4.3
@@ -953,6 +931,7 @@ namespace BarnesHut
                 else
                     stepcounts.Add(1);
             }
+            results.Dispose();
         }
         //To calculate the net force on a particular body, the nodes of the tree are traversed, starting from the root. If the center of mass of an internal node is sufficiently far from the body, the bodies contained in that part of the tree are treated as a single particle whose position and mass is respectively the center of mass and total mass of the internal node. If the internal node is sufficiently close to the body, the process is repeated for each of its children. 
         //Whether a node is or isn't sufficiently far away from a body, depends on the quotient s / d {\displaystyle s/d} s/d, where s is the width of the region represented by the internal node, and d is the distance between the body and the node's center of mass. The node is sufficiently far away when this ratio is smaller than a threshold value θ. The parameter θ determines the accuracy of the simulation; larger values of θ increase the speed of the simulation but decreases its accuracy. If θ = 0, no internal node is treated as a single body and the algorithm degenerates to a direct-sum algorithm.
