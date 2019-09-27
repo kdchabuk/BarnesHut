@@ -19,7 +19,7 @@ namespace BarnesHut
         private List<GameObject> gameObjects;
         public GameObject prefab;
         [SerializeField] private bool useJobsSystem = false;
-        private bool useMultiTimeStep = false; // currently buggy
+        [SerializeField] private bool useMultiTimeStep = false; // currently buggy
         [SerializeField] private bool reverseTime = false;
         [SerializeField] private bool drawOctants = false;
         [SerializeField] private float theta = 0.1f;
@@ -43,11 +43,12 @@ namespace BarnesHut
 
         private List<List<int>> interactionLists;
         private OctreeNode root;
+        private int fixedUpdateCounter;
         private float minOctantSize;
         
         private double initialEnergy;
-        private List<double> t2stepsizes;
-        private List<double> t3stepsizes;
+        // private List<double> t2stepsizes;
+        // private List<double> t3stepsizes;
         private List<int> stepcounts;
         
 
@@ -66,8 +67,8 @@ namespace BarnesHut
             for(int i = 0; i < this.NumObjects; i++)
                 interactionLists.Add(new List<int>());
 
-            t2stepsizes = new List<double>();
-            t3stepsizes = new List<double>();
+            // t2stepsizes = new List<double>();
+            // t3stepsizes = new List<double>();
             stepcounts = new List<int>();
             
             
@@ -90,7 +91,6 @@ namespace BarnesHut
                 gameObjects[i].transform.position = new Vector3(r.x, r.y, r.z);
             }
                     
-            Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
             // Debug.Log("Average jobs per batch:" + (float)(totalJobsRun) / jobHandleCount);
             
 
@@ -113,9 +113,15 @@ namespace BarnesHut
             Step();            
             //Debug.Log((Time.realtimeSinceStartup - startTime) * 1000f + "ms");
             
-            
-            if (!drawOctants)
-                root = null; // Will rebuild
+            fixedUpdateCounter += 1;
+            // Do once per second
+            if (fixedUpdateCounter >= 1d / fixedDeltaTime)
+            {
+                fixedUpdateCounter = 0;
+                if (!drawOctants)
+                    root = null; // Will rebuild
+                Debug.Log("Total energy rel. change:" + math.round(100d * (TotalEnergy() - initialEnergy) / initialEnergy) / 100);
+            }
         }
 
         void GenerateExampleSystem()
@@ -613,14 +619,16 @@ namespace BarnesHut
                 var currSlice = otherParticlesSlices[particleIndex];
                 NativeSlice<Particle> otherParticles = new NativeSlice<Particle>(fullInteractions, currSlice.x, currSlice.y);
                 Particle particle, iterStartParticle;
-                Particle k = default(Particle), ksum = default(Particle);
+                Particle k, ksum;
                 int rk4iteration;
                 double3 acc, d;
-                double dmag, temptime, time = 0, stepsize = fullStepsize / numIterations[particleIndex];
+                double dmag, temptime, time = 0, stepsize = fullStepsize / (double)numIterations[particleIndex];
                 iterStartParticle = objects[particleIndex];
 
                 for (int i = 0; i < numIterations[particleIndex]; i++)
                 {
+                    k = default(Particle);
+                    ksum = default(Particle);
                     for (rk4iteration = 1; rk4iteration <= 4; rk4iteration++)
                     {
                         acc = new double3(0);
@@ -681,7 +689,8 @@ namespace BarnesHut
                         nativeObjects = nativeObjects,
                         results = interactionResults[i],
                         index = i,
-                        theta = theta
+                        theta = theta,
+                        rootIndex = root.index
                     };
                     jobHandles.Add(job.Schedule());
 
@@ -762,13 +771,14 @@ namespace BarnesHut
             public NativeList<int> results;
             [ReadOnly] public int index;
             [ReadOnly] public double theta;
+            [ReadOnly] public int rootIndex;
 
             public void Execute()
             {
                 var ocIndexStack = new NativeList<int>(Allocator.Temp);
                 double dmag, s = 1;
                 OctreeStruct currentOctree;
-                ocIndexStack.Add(0);
+                ocIndexStack.Add(rootIndex);
                 
                 while (ocIndexStack.Length > 0)
                 {
@@ -890,8 +900,8 @@ namespace BarnesHut
 
         private void ComputeStepcounts()
         {
-            t2stepsizes.Clear();
-            t3stepsizes.Clear();
+            // t2stepsizes.Clear();
+            // t3stepsizes.Clear();
             stepcounts.Clear();
             var results = new NativeArray<int2>(NumObjects, Allocator.TempJob);
             if (useJobsSystem)
@@ -921,15 +931,15 @@ namespace BarnesHut
                     nearestNbhrIndex = NearestNbhrIndex(i, l, objects);
                     fastestNbhrIndex = FastestNbhrIndex(i, l, objects);
                 }
-                Debug.Log("nearest/fastest: " + nearestNbhrIndex + "/" + fastestNbhrIndex + " of " + objects.Count);
+                
                 var d = objects[nearestNbhrIndex].position - objects[i].position;
                 var v = objects[fastestNbhrIndex].velocity - objects[i].velocity;
 
                 // From Pfalzner Gibbon, p. 66, equation 4.2 and 4.3
                 var t2time = alphaTimeStep * 2 / (G * objects[nearestNbhrIndex].mass) * math.pow(math.lengthsq(d), 0.75d);
-                t2stepsizes.Add(t2time);
+                // t2stepsizes.Add(t2time);
                 var t3time = alphaTimeStep * math.length(d) / math.length(v);
-                t3stepsizes.Add(t3time);
+                // t3stepsizes.Add(t3time);
 
                 var time = math.min(t2time, t3time);
                 if (fixedDeltaTime / time > 0)
